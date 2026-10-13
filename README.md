@@ -1,67 +1,195 @@
-# DocGenius-Revolutionizing-PDFs-with-AI
+# 📄 DocGenius – AI-Powered PDF Assistant
 
-## Aboout the Project
-This is a Python application that allows you to load a PDF and ask questions about it using natural language. The application uses a LLM to generate a response about your PDF. The LLM will not answer questions unrelated to the document. The application reads the PDF and splits the text into smaller chunks that can be then fed into a LLM. It uses OpenAI embeddings to create vector representations of the chunks. The application then finds the chunks that are semantically similar to the question that the user asked and feeds those chunks to the LLM to generate a response. Here is the Proof of Concept.
+> Chat with your documents. Upload PDFs, ask questions in plain English, and get cited answers powered by **Google Gemini 1.5 Flash**.
 
-## Images of Proof of Concept
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.43-red?logo=streamlit)
+![LangChain](https://img.shields.io/badge/LangChain-1.x-green)
+![Gemini](https://img.shields.io/badge/Google%20Gemini-1.5%20Flash-orange?logo=google)
+![License](https://img.shields.io/badge/License-GPL%20v3-lightgrey)
 
-![logo](https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI/blob/main/Outputs/Screenshot%202023-05-15%20212935.png)
+---
 
-![logo](https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI/blob/main/Outputs/Screenshot%202023-05-15%20213027.png)
+## About This Project
 
-## Required Libraries
+This started as a fork of an OpenAI-based PDF Q&A app. I rebuilt it from the ground up — swapping the entire AI stack to Google Gemini, modernizing the LangChain implementation to use the current LCEL pipeline (the old chain/memory APIs were removed in LangChain 1.x), and adding a full suite of new features to turn it into something portfolio-worthy.
 
- - tiktoken
- - faiss-cpu
- - langchain
- - PyPDF2
- - python-dotenv
- - streamlit
- 
-#  Installation 
+The app lets you upload one or more PDFs, processes them into a FAISS vector store using Google's embedding model, and then lets you have a full conversation about the content — with source citations, document summaries, chat export, and a custom dark UI.
 
-This is make you understand how you may give instructions on setting up your project locally. To get a local copy up and running follow these simple example steps.
+---
 
-1. Clone the repo
+## What I Changed
 
- ```
- git clone https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI.git
- ```
- 
- 2. Install the required libraries
+The original project used OpenAI embeddings and GPT for Q&A, had a single-file upload, no chat memory, a hardcoded file path that broke on every machine, and default Streamlit styling.
+
+Here's what I rebuilt:
+
+**AI Stack**
+- Replaced OpenAI entirely with **Google Gemini 1.5 Flash** — free tier available, no credit card needed
+- Replaced OpenAI embeddings with **Google's `embedding-001` model** via `langchain-google-genai`
+- Rewrote the chain using **LCEL** (LangChain Expression Language), the modern approach that works with LangChain 1.x:
+  ```python
+  chain = prompt | llm | StrOutputParser()
+  ```
+
+**PDF Processing**
+- Added **multi-PDF support** — upload and query across several documents at once
+- Added **MD5 fingerprinting** so re-uploading the same file doesn't reprocess it
+- Switched from `CharacterTextSplitter` to `RecursiveCharacterTextSplitter` for smarter chunking
+- Added **page-level metadata tracking** so every answer can be traced back to a specific file and page
+
+**New Features**
+- Conversational memory — follow-up questions work naturally
+- Auto document summary generated on upload
+- Source citations on every answer (file name + page number)
+- Export chat history as `.txt` or `.json`
+- Quick-question chips for common tasks
+- Temperature slider to tune response creativity
+- Document stats panel (files, pages, word count)
+- API key input directly in the UI — no `.env` file required to run
+
+**UI**
+- Full custom dark theme with CSS — gradient header, animated chat bubbles, source citation cards
+- Proper landing page with feature cards when no documents are loaded
+
+**Code Quality**
+- Removed hardcoded absolute file paths
+- Added `.env.example` template
+- Updated `.gitignore` to exclude secrets and test PDFs
+- Rewrote this README
+
+---
+
+## Features
+
+| Feature | Description |
+|---|---|
+| 📚 Multi-PDF Upload | Load and query multiple PDFs simultaneously |
+| 🧠 Conversational Memory | Remembers context across follow-up questions |
+| 📋 Auto Document Summary | Structured summary generated on upload |
+| 📌 Source Citations | Every answer links back to the exact file and page |
+| 💾 Export Chat | Download your session as `.txt` or `.json` |
+| 🎛️ Tunable Responses | Adjust AI creativity with a temperature slider |
+| ⚡ Quick-Question Chips | One-click prompts for common tasks |
+| 🎨 Custom Dark UI | Clean interface built with custom CSS |
+
+---
+
+## Architecture
 
 ```
+User uploads PDF(s)
+        │
+        ▼
+   PyPDF2 extracts text + page metadata
+        │
+        ▼
+RecursiveCharacterTextSplitter
+   chunks the text (~1500 chars with overlap)
+        │
+        ▼
+Google Generative AI Embeddings
+   (models/embedding-001)
+        │
+        ▼
+    FAISS vector store (local, in-memory)
+        │
+  User asks a question
+        │
+        ▼
+ Similarity search → top 5 chunks retrieved
+        │
+        ▼
+LCEL chain: ChatPromptTemplate | Gemini 1.5 Flash | StrOutputParser
+        │
+        ▼
+   Answer + Source citations displayed
+```
+
+---
+
+## Tech Stack
+
+| Tool | Purpose |
+|---|---|
+| [Google Gemini 1.5 Flash](https://deepmind.google/technologies/gemini/) | LLM for Q&A and summarization |
+| [LangChain](https://www.langchain.com/) | LCEL chain orchestration |
+| [langchain-google-genai](https://python.langchain.com/docs/integrations/chat/google_generative_ai/) | Gemini + embeddings integration |
+| [FAISS](https://faiss.ai/) | Local vector similarity search |
+| [PyPDF2](https://pypdf2.readthedocs.io/) | PDF text extraction |
+| [Streamlit](https://streamlit.io/) | Web UI framework |
+
+---
+
+## Getting Started
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/<your-username>/DocGenius-Revolutionizing-PDFs-with-AI.git
+cd DocGenius-Revolutionizing-PDFs-with-AI
+```
+
+### 2. Create a virtual environment
+
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-```You will also need to add your OpenAI API key to the .env file.```
+### 4. Add your API key
 
-3. To use the application, run the ```app.py``` file with the streamlit CLI (after having installed streamlit):
+Create a `.env` file in the project root:
 
 ```
+GOOGLE_API_KEY=your_google_api_key_here
+```
+
+Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey) — no credit card needed.
+
+Alternatively, paste the key directly into the sidebar input when the app is running.
+
+### 5. Run the app
+
+```bash
 streamlit run app.py
 ```
 
-# Contributing
+Opens at `http://localhost:8501`.
 
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are greatly appreciated.
+---
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement". Don't forget to give the project a star! Thanks again!. ```Don't forget to star the project if you find it useful!```
+## Project Structure
 
-1. Fork the Project
+```
+DocGenius-Revolutionizing-PDFs-with-AI/
+├── app.py                  # Main Streamlit application
+├── requirements.txt        # Pinned Python dependencies
+├── .gitignore
+├── README.md
+└── DocGenius/
+    └── PDFChat.py          # Lightweight single-PDF version (legacy reference)
+```
 
-2. Create your Feature Branch
+---
 
-3. Commit your Changes
+## License
 
-4. Push to the Branch
+Distributed under the **GNU General Public License v3.0**. See `LICENSE` for details.
 
-5. Open a Pull Request
+---
 
-# Licnese
+## Acknowledgements
 
-Distributed under the GNU General Public License v3.0. See ```LICENSE.txt``` for more information.
-
-# Acknowledgements
-
-We would like to express our gratitude to the open-source community for their invaluable inspiration and contributions. We also acknowledge the Python libraries used in this project and their respective contributors.
+- Original project concept by [KalyanMurapaka45](https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI)
+- [Google AI Studio](https://aistudio.google.com/) for the Gemini API
+- The LangChain open-source community
