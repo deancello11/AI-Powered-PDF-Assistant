@@ -1,195 +1,95 @@
-# 📄 DocGenius – AI-Powered PDF Assistant
+# DocGenius – AI-Powered PDF Assistant
 
-> Chat with your documents. Upload PDFs, ask questions in plain English, and get cited answers powered by **Google Gemini 1.5 Flash**.
+A Streamlit app that lets you upload PDFs and have a conversation with them. Ask questions in plain English and get answers pulled directly from the document, with citations showing which page the information came from.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.43-red?logo=streamlit)
-![LangChain](https://img.shields.io/badge/LangChain-1.x-green)
-![Gemini](https://img.shields.io/badge/Google%20Gemini-1.5%20Flash-orange?logo=google)
-![License](https://img.shields.io/badge/License-GPL%20v3-lightgrey)
+Powered by Google Gemini 1.5 Flash and LangChain.
 
 ---
 
-## About This Project
+## Background
 
-This started as a fork of an OpenAI-based PDF Q&A app. I rebuilt it from the ground up — swapping the entire AI stack to Google Gemini, modernizing the LangChain implementation to use the current LCEL pipeline (the old chain/memory APIs were removed in LangChain 1.x), and adding a full suite of new features to turn it into something portfolio-worthy.
-
-The app lets you upload one or more PDFs, processes them into a FAISS vector store using Google's embedding model, and then lets you have a full conversation about the content — with source citations, document summaries, chat export, and a custom dark UI.
+This started as a fork of [KalyanMurapaka45's DocGenius project](https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI), which was built on OpenAI and an older version of LangChain. I rebuilt most of it — swapped the entire AI stack over to Google Gemini (free API, no credit card), updated the LangChain implementation to use the current LCEL approach since the old chain/memory APIs were removed in LangChain 1.x, and added a bunch of features that weren't there originally.
 
 ---
 
-## What I Changed
+## What it does
 
-The original project used OpenAI embeddings and GPT for Q&A, had a single-file upload, no chat memory, a hardcoded file path that broke on every machine, and default Streamlit styling.
-
-Here's what I rebuilt:
-
-**AI Stack**
-- Replaced OpenAI entirely with **Google Gemini 1.5 Flash** — free tier available, no credit card needed
-- Replaced OpenAI embeddings with **Google's `embedding-001` model** via `langchain-google-genai`
-- Rewrote the chain using **LCEL** (LangChain Expression Language), the modern approach that works with LangChain 1.x:
-  ```python
-  chain = prompt | llm | StrOutputParser()
-  ```
-
-**PDF Processing**
-- Added **multi-PDF support** — upload and query across several documents at once
-- Added **MD5 fingerprinting** so re-uploading the same file doesn't reprocess it
-- Switched from `CharacterTextSplitter` to `RecursiveCharacterTextSplitter` for smarter chunking
-- Added **page-level metadata tracking** so every answer can be traced back to a specific file and page
-
-**New Features**
-- Conversational memory — follow-up questions work naturally
-- Auto document summary generated on upload
-- Source citations on every answer (file name + page number)
-- Export chat history as `.txt` or `.json`
-- Quick-question chips for common tasks
-- Temperature slider to tune response creativity
-- Document stats panel (files, pages, word count)
-- API key input directly in the UI — no `.env` file required to run
-
-**UI**
-- Full custom dark theme with CSS — gradient header, animated chat bubbles, source citation cards
-- Proper landing page with feature cards when no documents are loaded
-
-**Code Quality**
-- Removed hardcoded absolute file paths
-- Added `.env.example` template
-- Updated `.gitignore` to exclude secrets and test PDFs
-- Rewrote this README
+- Upload one or more PDFs and query across all of them at once
+- Remembers the conversation so follow-up questions work naturally
+- Generates a summary of the document automatically after upload
+- Shows which file and page each answer came from
+- Export the full chat session as a .txt or .json file
+- Temperature slider to control how creative or literal the responses are
+- API key can be entered directly in the sidebar — no .env file needed to run it
 
 ---
 
-## Features
+## How it works
 
-| Feature | Description |
-|---|---|
-| 📚 Multi-PDF Upload | Load and query multiple PDFs simultaneously |
-| 🧠 Conversational Memory | Remembers context across follow-up questions |
-| 📋 Auto Document Summary | Structured summary generated on upload |
-| 📌 Source Citations | Every answer links back to the exact file and page |
-| 💾 Export Chat | Download your session as `.txt` or `.json` |
-| 🎛️ Tunable Responses | Adjust AI creativity with a temperature slider |
-| ⚡ Quick-Question Chips | One-click prompts for common tasks |
-| 🎨 Custom Dark UI | Clean interface built with custom CSS |
+When you upload a PDF, the app extracts the text and splits it into overlapping chunks. Those chunks get embedded using Google's embedding model and stored in a local FAISS index. When you ask a question, it searches the index for the most relevant chunks, passes them as context to Gemini along with the recent conversation history, and returns an answer.
+
+The source citations work by tracking which character range in the full text each chunk came from, then mapping that back to the original file and page number.
 
 ---
 
-## Architecture
+## Tech
 
-```
-User uploads PDF(s)
-        │
-        ▼
-   PyPDF2 extracts text + page metadata
-        │
-        ▼
-RecursiveCharacterTextSplitter
-   chunks the text (~1500 chars with overlap)
-        │
-        ▼
-Google Generative AI Embeddings
-   (models/embedding-001)
-        │
-        ▼
-    FAISS vector store (local, in-memory)
-        │
-  User asks a question
-        │
-        ▼
- Similarity search → top 5 chunks retrieved
-        │
-        ▼
-LCEL chain: ChatPromptTemplate | Gemini 1.5 Flash | StrOutputParser
-        │
-        ▼
-   Answer + Source citations displayed
-```
+- [Google Gemini 1.5 Flash](https://deepmind.google/technologies/gemini/) — handles Q&A and document summarization
+- [LangChain](https://www.langchain.com/) — LCEL chain for prompt/LLM/parser composition
+- [langchain-google-genai](https://python.langchain.com/docs/integrations/chat/google_generative_ai/) — Gemini + embeddings integration
+- [FAISS](https://faiss.ai/) — local vector similarity search, no external database needed
+- [PyPDF2](https://pypdf2.readthedocs.io/) — PDF text extraction
+- [Streamlit](https://streamlit.io/) — UI framework
 
 ---
 
-## Tech Stack
+## Setup
 
-| Tool | Purpose |
-|---|---|
-| [Google Gemini 1.5 Flash](https://deepmind.google/technologies/gemini/) | LLM for Q&A and summarization |
-| [LangChain](https://www.langchain.com/) | LCEL chain orchestration |
-| [langchain-google-genai](https://python.langchain.com/docs/integrations/chat/google_generative_ai/) | Gemini + embeddings integration |
-| [FAISS](https://faiss.ai/) | Local vector similarity search |
-| [PyPDF2](https://pypdf2.readthedocs.io/) | PDF text extraction |
-| [Streamlit](https://streamlit.io/) | Web UI framework |
-
----
-
-## Getting Started
-
-### 1. Clone the repo
+You'll need a Google API key. Get one for free at https://aistudio.google.com/app/apikey — no credit card required.
 
 ```bash
-git clone https://github.com/<your-username>/DocGenius-Revolutionizing-PDFs-with-AI.git
-cd DocGenius-Revolutionizing-PDFs-with-AI
-```
+git clone https://github.com/deancello11/AI-Powered-PDF-Assistant.git
+cd AI-Powered-PDF-Assistant
 
-### 2. Create a virtual environment
-
-```bash
 python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS / Linux
-source venv/bin/activate
-```
+venv\Scripts\activate       # Windows
+# source venv/bin/activate  # macOS / Linux
 
-### 3. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
-
-### 4. Add your API key
 
 Create a `.env` file in the project root:
 
 ```
-GOOGLE_API_KEY=your_google_api_key_here
+GOOGLE_API_KEY=your_key_here
 ```
 
-Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey) — no credit card needed.
-
-Alternatively, paste the key directly into the sidebar input when the app is running.
-
-### 5. Run the app
+Or just paste the key into the sidebar when the app is running.
 
 ```bash
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`.
-
 ---
 
-## Project Structure
+## Project structure
 
 ```
-DocGenius-Revolutionizing-PDFs-with-AI/
-├── app.py                  # Main Streamlit application
-├── requirements.txt        # Pinned Python dependencies
-├── .gitignore
-├── README.md
+├── app.py                 # main application
+├── requirements.txt
+├── .env.example           # template for the API key
 └── DocGenius/
-    └── PDFChat.py          # Lightweight single-PDF version (legacy reference)
+    └── PDFChat.py         # stripped-down single-PDF version, kept as reference
 ```
 
 ---
 
 ## License
 
-Distributed under the **GNU General Public License v3.0**. See `LICENSE` for details.
+GPL v3. See LICENSE for details.
 
 ---
 
-## Acknowledgements
+## Credit
 
-- Original project concept by [KalyanMurapaka45](https://github.com/KalyanMurapaka45/DocGenius-Revolutionizing-PDFs-with-AI)
-- [Google AI Studio](https://aistudio.google.com/) for the Gemini API
-- The LangChain open-source community
+Original project by [KalyanMurapaka45](https://github.com/KalyanMurapaka45).
