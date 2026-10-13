@@ -2,6 +2,7 @@ import os
 import io
 import json
 import hashlib
+import html
 import streamlit as st
 from datetime import datetime
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 import google.genai as genai
@@ -61,7 +62,7 @@ st.markdown(
     .chat-bubble.user      { background: #1e3a5f; border-left: 4px solid #4a9eff; }
     .chat-bubble.assistant { background: #1a2744; border-left: 4px solid #00c896; }
     .chat-bubble .icon     { font-size: 1.4rem; flex-shrink: 0; margin-top: 2px; }
-    .chat-bubble .text     { color: #e2eaf4; line-height: 1.6; flex: 1; }
+    .chat-bubble .text     { color: #e2eaf4; line-height: 1.6; flex: 1; white-space: pre-wrap; }
     .chat-bubble .time     { font-size: 0.72rem; color: #6b8aad; margin-top: 4px; }
 
     /* little card that shows the source chunk preview */
@@ -96,19 +97,19 @@ st.markdown(
 # --- helper functions ---
 
 def get_file_hash(raw_bytes: bytes) -> str:
-    # use first 10 chars of md5 just to identify if we've seen this file before
+    # short md5 hash just to check if we've already seen this file this session
     return hashlib.md5(raw_bytes).hexdigest()[:10]
 
 
 @st.cache_data(show_spinner=False)
 def read_pdfs(file_bytes_list: list, file_names: list):
     """
-    Loop through each uploaded PDF, pull out all the text,
-    and keep track of which page each chunk of text came from.
-    Returns the combined text and a list of page metadata dicts.
+    Pull text out of each PDF page by page, and record where each page
+    starts and ends in the combined text string. That lets us map
+    any chunk back to a file + page number later.
     """
     all_text = ""
-    page_locations = []  # each entry maps a char range back to a file + page number
+    page_locations = []
 
     for raw, name in zip(file_bytes_list, file_names):
         reader = PdfReader(io.BytesIO(raw))
@@ -129,89 +130,131 @@ def read_pdfs(file_bytes_list: list, file_names: list):
 @st.cache_data(show_spinner=False)
 def build_index(full_text: str, key: str):
     """
-    Split the text into overlapping chunks and embed them into a FAISS index.
-    Using RecursiveCharacterTextSplitter so it tries to split on paragraph breaks
-    first rather than just chopping at a fixed character count.
+    Chunk the text and embed it into a FAISS vector index.
+
+    Chunk size of 1500 chars with 200 overlap is a balance between
+    giving the model enough context per chunk and not wasting tokens
+    on irrelevant text. The overlap stops answers from falling through
+    the gap between two chunks.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1500,
         chunk_overlap=200,
+        # tries paragraph breaks first, then lines, then sentences
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_text(full_text)
 
+    # gemini-embedding-001 is the current model — the old models/embedding-001 is retired
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
+        model="models/gemini-embedding-001",
         google_api_key=key,
     )
 
-    # FAISS runs locally so no extra API calls for search
+    # FAISS runs locally — no extra API calls at search time
     index = FAISS.from_texts(chunks, embedding=embeddings)
     return index, chunks
 
 
 def get_answer(question: str, index, key: str, history: list, temp: float = 0.3):
     """
-    The main RAG function. Retrieves relevant chunks from the index,
-    builds a prompt with the last few conversation turns for context,
-    then calls Gemini and returns the answer + the source docs it used.
+    Core RAG function. Retrieves the top-5 most relevant chunks (k=5 is
+    enough to cover multi-part answers without flooding the context),
+    builds a prompt with recent conversation history, and calls Gemini.
+
+    History is passed via MessagesPlaceholder so LangChain treats it as
+    typed message objects rather than raw strings — this avoids a bug
+    where curly braces in answers (e.g. code snippets or JSON) get
+    mistaken for template variables and crash the next request.
     """
     retriever = index.as_retriever(search_kwargs={"k": 5})
+
+    # gemini-2.5-flash is the current stable model as of 2026
     llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         google_api_key=key,
         temperature=temp,
     )
 
-    # only pass the last 6 turns so we don't blow up the context window
+    # only keep the last 6 turns to avoid blowing up the context window
     recent_history = history[-6:]
     history_messages = []
     for user_msg, bot_msg in recent_history:
         history_messages.append(HumanMessage(content=user_msg))
         history_messages.append(AIMessage(content=bot_msg))
 
+    # MessagesPlaceholder handles history as structured objects, not raw strings
+    # this prevents LangChain from trying to parse {curly braces} in past answers
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "You are DocGenius, an AI assistant that answers questions about uploaded PDF documents.\n"
          "Only use the context below to answer. Be specific and reference details from the text.\n"
          "If you genuinely can't find the answer in the context, say so — don't make things up.\n\n"
          "Context:\n{context}"),
-        *[(m.type, m.content) for m in history_messages],
+        MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{question}"),
     ])
 
-    # pull the chunks first so we can show sources to the user
+    # retrieve first so we can pass source docs back to the UI
     matched_docs = retriever.invoke(question)
     context_str = "\n\n".join(d.page_content for d in matched_docs)
 
     chain = prompt | llm | StrOutputParser()
-    answer = chain.invoke({"context": context_str, "question": question})
+    answer = chain.invoke({
+        "context": context_str,
+        "chat_history": history_messages,
+        "question": question,
+    })
 
     return answer, matched_docs
 
 
 @st.cache_data(show_spinner=False)
 def summarize_doc(text: str, key: str) -> str:
-    """Quick summary of the document using Gemini directly (not through LangChain)."""
+    """
+    Summarize the document in rolling sections rather than just the first
+    8k chars — that way multi-PDF uploads don't get a summary that only
+    covers the first file.
+
+    Each section is summarized individually, then those summaries are
+    combined into a final overview.
+    """
     client = genai.Client(api_key=key)
 
-    # trim to 8k chars — enough for a good summary without hitting token limits
-    excerpt = text[:8000]
+    # break the full text into 8k-char sections
+    section_size = 8000
+    sections = [text[i:i + section_size] for i in range(0, min(len(text), 48000), section_size)]
 
-    prompt = (
-        "Summarize this document. Include:\n"
-        "1. What it's about\n"
-        "2. Key points as a bullet list\n"
-        "3. Any important conclusions or findings\n\n"
-        f"Document:\n{excerpt}"
+    section_summaries = []
+    for i, section in enumerate(sections):
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                f"Summarize this section of a document (section {i+1} of {len(sections)}).\n"
+                "List the main points briefly.\n\n"
+                f"{section}"
+            ),
+        )
+        section_summaries.append(resp.text)
+
+    # if there's only one section, just return it directly
+    if len(section_summaries) == 1:
+        return section_summaries[0]
+
+    # otherwise roll the section summaries up into one final summary
+    combined = "\n\n".join(f"Section {i+1}:\n{s}" for i, s in enumerate(section_summaries))
+    final = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=(
+            "Below are summaries of each section of a document. "
+            "Write a single cohesive summary covering the whole thing.\n\n"
+            f"{combined}"
+        ),
     )
-
-    resp = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
-    return resp.text
+    return final.text
 
 
 def chat_to_txt(history: list) -> str:
-    """Format the chat history as plain text for the export button."""
     lines = [
         "DocGenius Chat Export",
         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
@@ -230,18 +273,17 @@ def chat_to_json(history: list) -> str:
     return json.dumps(history, indent=2, ensure_ascii=False)
 
 
-# --- session state setup ---
-# just making sure all the keys exist on first load
+# --- session state ---
 
 def init_session():
     defaults = {
         "messages": [],        # full chat log shown in the UI
-        "qa_pairs": [],        # (question, answer) tuples fed back into the prompt as history
+        "qa_pairs": [],        # (question, answer) pairs passed back as conversation history
         "index": None,         # the FAISS vector store
         "doc_text": "",        # all extracted text across every uploaded PDF
-        "page_map": [],        # maps char positions back to file + page
-        "summary": "",         # auto-generated summary
-        "seen_files": set(),   # hashes of files we've already processed
+        "page_map": [],        # maps char positions back to file + page number
+        "summary": "",         # auto-generated summary shown after upload
+        "seen_files": set(),   # hashes of files already processed this session
         "loaded_files": [],    # display names of loaded files
         "page_count": 0,
         "word_count": 0,
@@ -259,7 +301,6 @@ init_session()
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
 
-    # let the user paste a key in the UI if they don't have a .env file
     key_input = st.text_input(
         "Google API Key",
         value=api_key or "",
@@ -288,12 +329,11 @@ with st.sidebar:
         "Creativity (temperature)",
         min_value=0.0, max_value=1.0,
         value=st.session_state.temp, step=0.05,
-        help="Low = stick to the facts, High = more creative/loose",
+        help="Low = stick to the facts. High = more creative but less precise.",
     )
 
     st.divider()
 
-    # show some stats once files are loaded
     if st.session_state.loaded_files:
         st.markdown("## 📊 Loaded Documents")
         col_a, col_b = st.columns(2)
@@ -322,7 +362,7 @@ with st.sidebar:
         c1, c2 = st.columns(2)
         with c1:
             st.download_button(
-                "📝 TXT",
+                "TXT",
                 data=chat_to_txt(st.session_state.messages),
                 file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
                 mime="text/plain",
@@ -330,19 +370,19 @@ with st.sidebar:
             )
         with c2:
             st.download_button(
-                "🗂 JSON",
+                "JSON",
                 data=chat_to_json(st.session_state.messages),
                 file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
                 mime="application/json",
                 use_container_width=True,
             )
 
-    if st.button("🗑️ Clear Chat", use_container_width=True):
+    if st.button("Clear Chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.qa_pairs = []
         st.rerun()
 
-    if st.button("🔄 Start Over", use_container_width=True):
+    if st.button("Start Over", use_container_width=True):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -358,10 +398,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# stop here if there's no API key — nothing works without it
 if not api_key:
     st.warning(
-        "🔑 No API key found. Add it in the sidebar or put `GOOGLE_API_KEY=...` in a `.env` file. "
+        "No API key found. Add it in the sidebar or create a `.env` file with `GOOGLE_API_KEY=...`. "
         "Get a free key at [Google AI Studio](https://aistudio.google.com/app/apikey).",
         icon="⚠️",
     )
@@ -371,7 +410,6 @@ if not api_key:
 # --- document processing ---
 
 if process_btn and uploads:
-    # filter out anything we've already processed this session
     new_uploads = []
     for f in uploads:
         raw = f.read()
@@ -388,13 +426,11 @@ if process_btn and uploads:
 
             new_text, new_pages = read_pdfs([bytes(b) for b in raw_bytes], names)
 
-            # merge with anything already loaded
             combined_text = st.session_state.doc_text + new_text
             combined_pages = st.session_state.page_map + new_pages
 
             new_index, _ = build_index(combined_text, api_key)
 
-            # update session
             for name, _, fhash in new_uploads:
                 st.session_state.seen_files.add(fhash)
                 if name not in st.session_state.loaded_files:
@@ -416,9 +452,8 @@ elif process_btn and not uploads:
     st.warning("Upload at least one PDF first.", icon="⚠️")
 
 
-# show the summary in a collapsible section
 if st.session_state.summary:
-    with st.expander("📋 Document Summary", expanded=False):
+    with st.expander("Document Summary", expanded=False):
         st.markdown(st.session_state.summary)
 
 
@@ -426,31 +461,37 @@ if st.session_state.summary:
 
 if st.session_state.index:
 
-    # render all messages so far
     for msg in st.session_state.messages:
         icon = "🧑" if msg["role"] == "user" else "🤖"
         role_class = msg["role"]
+
+        # escape the content before injecting into HTML — prevents a malicious PDF
+        # from getting the model to output HTML tags that the browser would render
+        safe_content = html.escape(msg["content"])
+
         st.markdown(
             f'<div class="chat-bubble {role_class}">'
             f'<span class="icon">{icon}</span>'
-            f'<div><div class="text">{msg["content"]}</div>'
+            f'<div><div class="text">{safe_content}</div>'
             f'<div class="time">{msg["time"]}</div></div>'
             f"</div>",
             unsafe_allow_html=True,
         )
-        # show sources under each assistant reply
         if msg.get("sources"):
-            with st.expander(f"📌 {len(msg['sources'])} source(s) used", expanded=False):
+            with st.expander(f"{len(msg['sources'])} source(s) used", expanded=False):
                 for s in msg["sources"]:
+                    # escape the preview text too — same reason
+                    safe_preview = html.escape(s["preview"])
+                    safe_file = html.escape(s["file"])
                     st.markdown(
-                        f'<div class="source-card"><strong>{s["file"]} · Page {s["page"]}</strong>'
-                        f'<br>{s["preview"]}</div>',
+                        f'<div class="source-card">'
+                        f'<strong>{safe_file} · Page {s["page"]}</strong>'
+                        f'<br>{safe_preview}</div>',
                         unsafe_allow_html=True,
                     )
 
     st.markdown("---")
 
-    # text input + send button in a form so Enter key works
     with st.form("question_form", clear_on_submit=True):
         q_col, btn_col = st.columns([5, 1])
         with q_col:
@@ -460,30 +501,26 @@ if st.session_state.index:
                 label_visibility="collapsed",
             )
         with btn_col:
-            send = st.form_submit_button("Send ➤", use_container_width=True, type="primary")
+            send = st.form_submit_button("Send", use_container_width=True, type="primary")
 
-    # quick buttons for common questions
     st.markdown("**Try asking:**")
     btn_cols = st.columns(4)
     shortcuts = [
-        "📝 Summarize this document",
-        "🔑 What are the key points?",
-        "📊 Any data or statistics?",
-        "❓ What questions does this raise?",
+        "Summarize this document",
+        "What are the key points?",
+        "Any data or statistics?",
+        "What questions does this raise?",
     ]
     shortcut_clicked = None
     for i, label in enumerate(shortcuts):
         if btn_cols[i].button(label, use_container_width=True):
-            # strip the emoji prefix before sending
-            shortcut_clicked = label.split(" ", 1)[1]
+            shortcut_clicked = label
 
-    # figure out what question to actually run
     final_q = user_question if send and user_question else shortcut_clicked
 
     if final_q:
         now = datetime.now().strftime("%H:%M")
 
-        # save the user's message
         st.session_state.messages.append({
             "role": "user",
             "content": final_q,
@@ -500,11 +537,12 @@ if st.session_state.index:
                     st.session_state.temp,
                 )
 
-                # figure out which file/page each source chunk came from
                 sources = []
                 for doc in source_docs:
                     chunk = doc.page_content
-                    # find where this chunk sits in the full text
+                    # match the chunk back to a file + page by character position
+                    # note: this is approximate — repeated passages or chunks that
+                    # span a page boundary will show the page where the chunk starts
                     pos = st.session_state.doc_text.find(chunk[:80])
                     location = {"file": "Unknown", "page": "?"}
                     if pos >= 0:
@@ -518,7 +556,6 @@ if st.session_state.index:
                         "preview": chunk[:200].replace("\n", " ") + "…",
                     })
 
-                # save to both history stores
                 st.session_state.qa_pairs.append((final_q, answer))
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -537,26 +574,24 @@ if st.session_state.index:
         st.rerun()
 
 else:
-    # nothing loaded yet — show a welcome screen
     st.markdown(
         """
         <div style='text-align:center; padding:3rem 1rem; color:#6b8aad;'>
             <div style='font-size:4rem;'>📂</div>
             <h3 style='color:#a8c4d8; margin:0.5rem 0;'>No documents loaded</h3>
-            <p>Upload a PDF in the sidebar and hit <strong>⚡ Process Documents</strong> to get started.</p>
+            <p>Upload a PDF in the sidebar and hit <strong>Process Documents</strong> to get started.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # feature overview cards
     with st.expander("What can this do?", expanded=True):
         c1, c2, c3 = st.columns(3)
         features = [
             ("📚", "Multiple PDFs", "Load several docs and query across all of them"),
             ("🧠", "Remembers context", "Follow-up questions work naturally"),
-            ("📋", "Auto summary", "Get a summary of any doc right after upload"),
-            ("📌", "Source citations", "See exactly which page each answer came from"),
+            ("📋", "Auto summary", "Covers the whole document, not just the first page"),
+            ("📌", "Source citations", "See which page each answer came from (approximate)"),
             ("💾", "Export chat", "Save your Q&A as a .txt or .json file"),
             ("🎛️", "Adjustable AI", "Tune how creative or factual the responses are"),
         ]
@@ -572,7 +607,6 @@ else:
                     unsafe_allow_html=True,
                 )
 
-# footer
 st.markdown(
     "<hr style='margin-top:2rem;border-color:#1e3a5f'>"
     "<p style='text-align:center;color:#3d5a7a;font-size:0.78rem'>"
